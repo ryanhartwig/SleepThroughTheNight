@@ -310,6 +310,8 @@ local currentState = STATE_IDLE
 local prevSleeping = {}
 -- Track players notified about wrong-phase sleep to avoid spam
 local blockedNotifiedPlayers = {}
+-- Players who must leave bed before they can trigger another sleep
+local postSkipImmunity = {}
 
 local function transitionTo(newState)
     print(string.format("%s State: %s -> %s\n", MOD_TAG, currentState, newState))
@@ -345,13 +347,15 @@ local function doTimeSkip()
                     ExecuteInGameThread(function()
                         fadeOut(function()
                             notify(string.format("Good morning! Day %d", dayNum + 1))
-                            -- Pre-mark anyone still in bed so they don't get
-                            -- a "can't sleep" toast upon waking to morning
+                            -- Mark anyone still in bed as immune — they must
+                            -- leave and re-enter to trigger another sleep
                             local stillSleeping, _, _ = countSleepingPlayers()
                             prevSleeping = stillSleeping
                             blockedNotifiedPlayers = {}
+                            postSkipImmunity = {}
                             for name, _ in pairs(stillSleeping) do
                                 blockedNotifiedPlayers[name] = true
+                                postSkipImmunity[name] = true
                             end
                             transitionTo(STATE_IDLE)
                         end)
@@ -368,10 +372,26 @@ local function tick()
     end
 
     local sleeping, sleepCount, total = countSleepingPlayers()
+
+    -- Clear post-skip immunity for players who left bed
+    for name, _ in pairs(postSkipImmunity) do
+        if not sleeping[name] then
+            postSkipImmunity[name] = nil
+        end
+    end
+
+    -- Subtract immune players from the effective sleep count
+    local effectiveSleepCount = 0
+    for name, _ in pairs(sleeping) do
+        if not postSkipImmunity[name] then
+            effectiveSleepCount = effectiveSleepCount + 1
+        end
+    end
+
     prevSleeping = sleeping
 
     if currentState == STATE_IDLE then
-        if sleepCount > 0 then
+        if effectiveSleepCount > 0 then
             if not isAllowedPhase() then
                 -- Only notify once per player per wrong-phase bed entry
                 for name, _ in pairs(sleeping) do
@@ -446,18 +466,19 @@ end
 
 -- Start polling when player spawns into world
 RegisterHook("/Script/Subnautica2.SN2PlayerController:OnPossessedPawnChangedFunction", function()
-    ExecuteWithDelay(2000, function()
+    ExecuteWithDelay(5000, function()
         ExecuteInGameThread(function()
             startPollLoop()
         end)
     end)
 end)
 
--- Also start immediately if already in-game (hot-reload case)
-ExecuteWithDelay(1000, function()
+-- Hot-reload fallback: check if we're in a world (not main menu) using GameState
+-- Avoids accessing PlayerController.Pawn which can crash at the main menu
+ExecuteWithDelay(3000, function()
     ExecuteInGameThread(function()
-        local pc = UEHelpers:GetPlayerController()
-        if pc and pc:IsValid() and pc.Pawn and pc.Pawn:IsValid() then
+        local gs = FindFirstOf("SN2GameState")
+        if gs and gs:IsValid() then
             startPollLoop()
         end
     end)

@@ -1,12 +1,12 @@
 # ── Sleep Phases ──
 # Which day phases allow sleeping. Comma-separated.
 # Valid values: Dawn, Day, Dusk, Night
-allowed_phases=Dusk,Night
+allowed_phases=Dawn, Day, Dusk, Night
 
 # ── Multiplayer ──
 # Percentage of connected players required in bed to trigger time skip (1-100)
-required_player_percent=100
+required_player_percent=0
 
 # ── Wake Up ──
 # What hour to skip to when sleeping (0-23)
-wake_up_hour=6
+wake_up_hour=5
