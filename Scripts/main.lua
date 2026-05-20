@@ -181,26 +181,22 @@ local function clearNotifications()
     end)
 end
 
--- Broadcast toast to all connected players (host only — clients use local)
+-- Broadcast toast to all connected players (host only — clients skip, they receive the broadcast)
 local function notifyAll(message)
+    if not isHost() then return end
     clearNotifications()
-    if isHost() then
-        print(string.format("%s [ALL] %s\n", MOD_TAG, message))
-        local ok, err = pcall(function()
-            local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
-            if msgLib then
-                local pawn = UEHelpers:GetPlayerController().Pawn
-                if pawn and pawn:IsValid() then
-                    msgLib:NotifyAllPlayersString(pawn, message, 0)
-                end
+    print(string.format("%s [ALL] %s\n", MOD_TAG, message))
+    local ok, err = pcall(function()
+        local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
+        if msgLib then
+            local pawn = UEHelpers:GetPlayerController().Pawn
+            if pawn and pawn:IsValid() then
+                msgLib:NotifyAllPlayersString(pawn, message, 0)
             end
-        end)
-        if not ok then
-            print(string.format("%s Broadcast failed, falling back to local: %s\n", MOD_TAG, tostring(err)))
-            notifyLocal(message)
         end
-    else
-        notifyLocal(message)
+    end)
+    if not ok then
+        print(string.format("%s Broadcast failed: %s\n", MOD_TAG, tostring(err)))
     end
 end
 
