@@ -8,6 +8,19 @@ print(string.format("%s v%s loaded\n", MOD_TAG, VERSION))
 -- Guard against stale poll loops after hot-reload
 local MOD_INSTANCE_ID = tostring(os.clock())
 
+-- ── Host Detection ───────────────────────────────────────────
+
+local function isHost()
+    local ok, result = pcall(function()
+        local pawn = UEHelpers:GetPlayerController().Pawn
+        if pawn and pawn:IsValid() then
+            return pawn:HasAuthority()
+        end
+        return false
+    end)
+    return ok and result
+end
+
 -- ── Time of Day ──────────────────────────────────────────────
 
 local function getTimeOfDayComponent()
@@ -168,22 +181,25 @@ local function clearNotifications()
     end)
 end
 
--- Broadcast toast to all connected players
+-- Broadcast toast to all connected players (host only — clients use local)
 local function notifyAll(message)
-    print(string.format("%s [ALL] %s\n", MOD_TAG, message))
     clearNotifications()
-    local ok, err = pcall(function()
-        local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
-        if msgLib then
-            local pawn = UEHelpers:GetPlayerController().Pawn
-            if pawn and pawn:IsValid() then
-                msgLib:NotifyAllPlayersString(pawn, message, 0)
+    if isHost() then
+        print(string.format("%s [ALL] %s\n", MOD_TAG, message))
+        local ok, err = pcall(function()
+            local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
+            if msgLib then
+                local pawn = UEHelpers:GetPlayerController().Pawn
+                if pawn and pawn:IsValid() then
+                    msgLib:NotifyAllPlayersString(pawn, message, 0)
+                end
             end
+        end)
+        if not ok then
+            print(string.format("%s Broadcast failed, falling back to local: %s\n", MOD_TAG, tostring(err)))
+            notifyLocal(message)
         end
-    end)
-    if not ok then
-        -- Fall back to local-only if broadcast fails
-        print(string.format("%s Broadcast failed, falling back to local: %s\n", MOD_TAG, tostring(err)))
+    else
         notifyLocal(message)
     end
 end
