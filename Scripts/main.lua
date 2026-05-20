@@ -137,7 +137,8 @@ end
 
 -- ── Notifications ────────────────────────────────────────────
 
-local function notify(message)
+-- Local-only toast (for messages only this player should see)
+local function notifyLocal(message)
     print(string.format("%s %s\n", MOD_TAG, message))
     local ok, err = pcall(function()
         local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
@@ -150,6 +151,40 @@ local function notify(message)
     end)
     if not ok then
         print(string.format("%s Toast error: %s\n", MOD_TAG, tostring(err)))
+    end
+end
+
+-- Clear any queued toasts
+local function clearNotifications()
+    pcall(function()
+        local comps = FindAllOf("UWENotificationComponent")
+        if comps then
+            for _, comp in ipairs(comps) do
+                if comp:IsValid() then
+                    comp:ClearNotifications()
+                end
+            end
+        end
+    end)
+end
+
+-- Broadcast toast to all connected players
+local function notifyAll(message)
+    print(string.format("%s [ALL] %s\n", MOD_TAG, message))
+    clearNotifications()
+    local ok, err = pcall(function()
+        local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
+        if msgLib then
+            local pawn = UEHelpers:GetPlayerController().Pawn
+            if pawn and pawn:IsValid() then
+                msgLib:NotifyAllPlayersString(pawn, message, 0)
+            end
+        end
+    end)
+    if not ok then
+        -- Fall back to local-only if broadcast fails
+        print(string.format("%s Broadcast failed, falling back to local: %s\n", MOD_TAG, tostring(err)))
+        notifyLocal(message)
     end
 end
 
@@ -269,9 +304,9 @@ local function showHudWidget(sleepCount, total)
         text:SetText(FText(string.format("%d/%d players sleeping...", sleepCount, total)))
 
         local slot = canvas:AddChildToCanvas(text)
-        -- Top center of screen
-        slot:SetAnchors({ Minimum = { X = 0.5, Y = 0.1 }, Maximum = { X = 0.5, Y = 0.1 } })
-        slot:SetAlignment({ X = 0.5, Y = 0.5 })
+        -- Right side of screen
+        slot:SetAnchors({ Minimum = { X = 1.0, Y = 0.1 }, Maximum = { X = 1.0, Y = 0.1 } })
+        slot:SetAlignment({ X = 1.0, Y = 0.5 })
         slot:SetAutoSize(true)
 
         root:AddToViewport(100)
@@ -312,6 +347,8 @@ local prevSleeping = {}
 local blockedNotifiedPlayers = {}
 -- Players who must leave bed before they can trigger another sleep
 local postSkipImmunity = {}
+-- Unique ID for each skip attempt — stale timers check this to self-cancel
+local skipAttemptId = 0
 
 local function transitionTo(newState)
     print(string.format("%s State: %s -> %s\n", MOD_TAG, currentState, newState))
@@ -319,12 +356,14 @@ local function transitionTo(newState)
 end
 
 local function onPlayerStartedSleeping(playerName, sleepCount, total)
-    notify(string.format("%s is sleeping (%d/%d)", playerName, sleepCount, total))
+    notifyAll(string.format("%s is sleeping (%d/%d)", playerName, sleepCount, total))
 end
 
 
 local function doTimeSkip()
     transitionTo(STATE_SKIPPING)
+    skipAttemptId = skipAttemptId + 1
+    local myAttemptId = skipAttemptId
 
     -- NOTE: Every modded instance calls SetTimeOfDay. On non-host clients,
     -- this may silently fail (server-owned component) — the host's call is
@@ -332,10 +371,25 @@ local function doTimeSkip()
 
     local dayNum = getDayNumber()
 
-    -- Wait for the bed entry animation to finish, then fade
+    -- Wait for the bed entry animation to finish, then revalidate before fading
     ExecuteWithDelay(2000, function()
         ExecuteInGameThread(function()
+            if myAttemptId ~= skipAttemptId then return end  -- stale timer
             if currentState ~= STATE_SKIPPING then return end
+
+            -- Recheck: are enough players still in bed?
+            local _, sleepCount, total = countSleepingPlayers()
+            if not isThresholdMet(sleepCount, total) and not isSingleplayer() then
+                print(string.format("%s Sleep cancelled — not enough players in bed\n", MOD_TAG))
+                transitionTo(STATE_IDLE)
+                return
+            end
+            -- Singleplayer: check player is still in bed
+            if isSingleplayer() and sleepCount == 0 then
+                print(string.format("%s Sleep cancelled — player left bed\n", MOD_TAG))
+                transitionTo(STATE_IDLE)
+                return
+            end
 
             fadeIn(function()
                 if currentState ~= STATE_SKIPPING then return end
@@ -346,7 +400,7 @@ local function doTimeSkip()
                 ExecuteWithDelay(300, function()
                     ExecuteInGameThread(function()
                         fadeOut(function()
-                            notify(string.format("Good morning! Day %d", dayNum + 1))
+                            notifyAll(string.format("Good morning! Day %d", dayNum + 1))
                             -- Mark anyone still in bed as immune — they must
                             -- leave and re-enter to trigger another sleep
                             local stillSleeping, _, _ = countSleepingPlayers()
@@ -368,7 +422,20 @@ end
 
 local function tick()
     if currentState == STATE_SKIPPING then
-        return  -- don't poll during time skip
+        -- Check if someone left bed during the animation delay — cancel if threshold no longer met
+        local _, sleepCount, total = countSleepingPlayers()
+        local shouldCancel = false
+        if isSingleplayer() then
+            shouldCancel = (sleepCount == 0)
+        else
+            shouldCancel = not isThresholdMet(sleepCount, total)
+        end
+        if shouldCancel then
+            print(string.format("%s Sleep cancelled — player left bed during countdown\n", MOD_TAG))
+            hideFadeOverlay()
+            transitionTo(STATE_IDLE)
+        end
+        return
     end
 
     local sleeping, sleepCount, total = countSleepingPlayers()
@@ -388,8 +455,6 @@ local function tick()
         end
     end
 
-    prevSleeping = sleeping
-
     if currentState == STATE_IDLE then
         if effectiveSleepCount > 0 then
             if not isAllowedPhase() then
@@ -397,7 +462,7 @@ local function tick()
                 for name, _ in pairs(sleeping) do
                     if not blockedNotifiedPlayers[name] then
                         blockedNotifiedPlayers[name] = true
-                        notify("You can only sleep during dusk or night")
+                        notifyLocal("You can only sleep during dusk or night")
                     end
                 end
                 -- Clear tracked players who left bed
@@ -415,16 +480,24 @@ local function tick()
             if isSingleplayer() then
                 doTimeSkip()
             else
-                -- Notify for each newly sleeping player
                 for name, _ in pairs(sleeping) do
-                    onPlayerStartedSleeping(name, sleepCount, total)
+                    if not postSkipImmunity[name] then
+                        onPlayerStartedSleeping(name, effectiveSleepCount, total)
+                    end
                 end
                 transitionTo(STATE_WAITING)
-                showHudWidget(sleepCount, total)
+                showHudWidget(effectiveSleepCount, total)
             end
         end
 
     elseif currentState == STATE_WAITING then
+        -- Notify for newly sleeping players
+        for name, _ in pairs(sleeping) do
+            if not prevSleeping[name] and not postSkipImmunity[name] then
+                onPlayerStartedSleeping(name, effectiveSleepCount, total)
+            end
+        end
+
         if sleepCount == 0 then
             hideHudWidget()
             transitionTo(STATE_IDLE)
@@ -432,9 +505,11 @@ local function tick()
             hideHudWidget()
             doTimeSkip()
         else
-            updateHudWidget(sleepCount, total)
+            updateHudWidget(effectiveSleepCount, total)
         end
     end
+
+    prevSleeping = sleeping
 end
 
 -- ── Poll Loop ────────────────────────────────────────────────
