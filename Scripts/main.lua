@@ -72,8 +72,7 @@ local function findAllBeds()
     return {}
 end
 
-local function isPlayerInBed(pawn)
-    local beds = findAllBeds()
+local function isPlayerInBed(pawn, beds)
     for _, bed in ipairs(beds) do
         if bed:IsValid() then
             local ok, result = pcall(function()
@@ -120,12 +119,16 @@ local function countSleepingPlayers()
     local sleeping = {}
     local sleepCount = 0
 
+    -- Fetch beds once per tick, not once per player
+    local beds = findAllBeds()
+    if #beds == 0 then return sleeping, 0, total end
+
     for i = 1, total do
         local ps = playerArray[i]
         if ps:IsValid() then
             local ok, pawn = pcall(function() return ps:GetPawn() end)
             if ok and pawn and pawn:IsValid() then
-                if isPlayerInBed(pawn) then
+                if isPlayerInBed(pawn, beds) then
                     local name = getPlayerName(ps)
                     sleeping[name] = true
                     sleepCount = sleepCount + 1
@@ -446,6 +449,18 @@ local function tick()
             print(string.format("%s Sleep cancelled — player left bed during countdown\n", MOD_TAG))
             hideFadeOverlay()
             transitionTo(STATE_IDLE)
+        end
+        return
+    end
+
+    -- Skip expensive bed scanning when sleep isn't possible and nobody is sleeping
+    if currentState == STATE_IDLE and not isAllowedPhase() then
+        -- Still need to clear stale blocked notifications if players left bed
+        for name, _ in pairs(blockedNotifiedPlayers) do
+            blockedNotifiedPlayers[name] = nil
+        end
+        for name, _ in pairs(postSkipImmunity) do
+            postSkipImmunity[name] = nil
         end
         return
     end
