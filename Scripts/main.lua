@@ -23,11 +23,24 @@ end
 
 -- ── Time of Day ──────────────────────────────────────────────
 
+local cachedGameState = nil
+local cachedTimeOfDay = nil
+
 local function getTimeOfDayComponent()
-    local gs = FindFirstOf("SN2GameState")
-    if not gs or not gs:IsValid() then return nil end
-    local tod = gs.TimeOfDayComponent
+    -- Use cached references if still valid
+    if cachedTimeOfDay and cachedTimeOfDay:IsValid() then
+        return cachedTimeOfDay
+    end
+    if cachedGameState and not cachedGameState:IsValid() then
+        cachedGameState = nil
+    end
+    if not cachedGameState then
+        cachedGameState = FindFirstOf("SN2GameState")
+    end
+    if not cachedGameState or not cachedGameState:IsValid() then return nil end
+    local tod = cachedGameState.TimeOfDayComponent
     if not tod or not tod:IsValid() then return nil end
+    cachedTimeOfDay = tod
     return tod
 end
 
@@ -64,12 +77,42 @@ end
 
 -- ── Bed Detection ────────────────────────────────────────────
 
-local function findAllBeds()
+local cachedBeds = {}
+local bedsInitialized = false
+
+local function refreshBedCache()
     local ok, beds = pcall(FindAllOf, "BP_BedSingle_C")
     if ok and beds then
-        return beds
+        cachedBeds = beds
+    else
+        cachedBeds = {}
     end
-    return {}
+    bedsInitialized = true
+    print(string.format("%s Bed cache: %d beds found\n", MOD_TAG, #cachedBeds))
+end
+
+-- Watch for new beds being built
+NotifyOnNewObject("/Script/Engine.Actor", function(newObject)
+    pcall(function()
+        if newObject:IsValid() and newObject:GetClass():GetFName():ToString() == "BP_BedSingle_C" then
+            table.insert(cachedBeds, newObject)
+            print(string.format("%s New bed detected, cache now %d beds\n", MOD_TAG, #cachedBeds))
+        end
+    end)
+end)
+
+local function getValidBeds()
+    -- Filter out deconstructed beds
+    local valid = {}
+    for _, bed in ipairs(cachedBeds) do
+        if bed:IsValid() then
+            table.insert(valid, bed)
+        end
+    end
+    if #valid ~= #cachedBeds then
+        cachedBeds = valid
+    end
+    return valid
 end
 
 local function isPlayerInBed(pawn, beds)
@@ -119,8 +162,7 @@ local function countSleepingPlayers()
     local sleeping = {}
     local sleepCount = 0
 
-    -- Fetch beds once per tick, not once per player
-    local beds = findAllBeds()
+    local beds = getValidBeds()
     if #beds == 0 then return sleeping, 0, total end
 
     for i = 1, total do
@@ -170,24 +212,9 @@ local function notifyLocal(message)
     end
 end
 
--- Clear any queued toasts
-local function clearNotifications()
-    pcall(function()
-        local comps = FindAllOf("UWENotificationComponent")
-        if comps then
-            for _, comp in ipairs(comps) do
-                if comp:IsValid() then
-                    comp:ClearNotifications()
-                end
-            end
-        end
-    end)
-end
-
 -- Broadcast toast to all connected players (host only — clients skip, they receive the broadcast)
 local function notifyAll(message)
     if not isHost() then return end
-    clearNotifications()
     print(string.format("%s [ALL] %s\n", MOD_TAG, message))
     local ok, err = pcall(function()
         local msgLib = StaticFindObject("/Script/UWEGameplayMessageRuntime.Default__UWEGameplayMessageBPLibrary")
@@ -453,18 +480,6 @@ local function tick()
         return
     end
 
-    -- Skip expensive bed scanning when sleep isn't possible and nobody is sleeping
-    if currentState == STATE_IDLE and not isAllowedPhase() then
-        -- Still need to clear stale blocked notifications if players left bed
-        for name, _ in pairs(blockedNotifiedPlayers) do
-            blockedNotifiedPlayers[name] = nil
-        end
-        for name, _ in pairs(postSkipImmunity) do
-            postSkipImmunity[name] = nil
-        end
-        return
-    end
-
     local sleeping, sleepCount, total = countSleepingPlayers()
 
     -- Clear post-skip immunity for players who left bed
@@ -482,6 +497,13 @@ local function tick()
         end
     end
 
+    -- Clear blocked tracking for players who left bed
+    for name, _ in pairs(blockedNotifiedPlayers) do
+        if not sleeping[name] then
+            blockedNotifiedPlayers[name] = nil
+        end
+    end
+
     if currentState == STATE_IDLE then
         if effectiveSleepCount > 0 then
             if not isAllowedPhase() then
@@ -490,12 +512,6 @@ local function tick()
                     if not blockedNotifiedPlayers[name] then
                         blockedNotifiedPlayers[name] = true
                         notifyLocal("You can only sleep during dusk or night")
-                    end
-                end
-                -- Clear tracked players who left bed
-                for name, _ in pairs(blockedNotifiedPlayers) do
-                    if not sleeping[name] then
-                        blockedNotifiedPlayers[name] = nil
                     end
                 end
                 return
@@ -547,6 +563,7 @@ local pollTimerActive = false
 local function startPollLoop()
     if pollTimerActive then return end
     pollTimerActive = true
+    refreshBedCache()
     print(string.format("%s Poll loop started\n", MOD_TAG))
 
     local function pollOnce()
