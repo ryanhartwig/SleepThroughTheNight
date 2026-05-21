@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 local config = require("config")
 
-local VERSION = "0.1.0"
+local VERSION = "1.0.1"
 local MOD_TAG = "[SleepThroughNight]"
 print(string.format("%s v%s loaded\n", MOD_TAG, VERSION))
 
@@ -77,12 +77,34 @@ end
 
 -- ── Bed Detection ────────────────────────────────────────────
 
-local function findAllBeds()
+local cachedBeds = {}
+
+local function refreshBedCache()
     local ok, beds = pcall(FindAllOf, "BP_BedSingle_C")
     if ok and beds then
-        return beds
+        cachedBeds = beds
+    else
+        cachedBeds = {}
     end
-    return {}
+    print(string.format("%s Bed cache: %d beds\n", MOD_TAG, #cachedBeds))
+end
+
+-- Watch for newly built beds (scoped to exact Blueprint class — safe on client join)
+NotifyOnNewObject("/Game/Blueprints/BaseBuilding/BP_BedSingle.BP_BedSingle_C", function(newBed)
+    table.insert(cachedBeds, newBed)
+end)
+
+local function getValidBeds()
+    local valid = {}
+    for _, bed in ipairs(cachedBeds) do
+        if bed:IsValid() then
+            table.insert(valid, bed)
+        end
+    end
+    if #valid ~= #cachedBeds then
+        cachedBeds = valid
+    end
+    return valid
 end
 
 local function isPlayerInBed(pawn, beds)
@@ -106,9 +128,12 @@ end
 -- ── Player Enumeration ───────────────────────────────────────
 
 local function getPlayerStates()
-    local gs = FindFirstOf("SN2GameState")
-    if not gs or not gs:IsValid() then return {}, 0 end
-    local ok, playerArray = pcall(function() return gs.PlayerArray end)
+    -- Reuse cached GameState to avoid FindFirstOf per tick
+    if not cachedGameState or not cachedGameState:IsValid() then
+        cachedGameState = FindFirstOf("SN2GameState")
+    end
+    if not cachedGameState or not cachedGameState:IsValid() then return {}, 0 end
+    local ok, playerArray = pcall(function() return cachedGameState.PlayerArray end)
     if not ok or not playerArray then return {}, 0 end
     return playerArray, #playerArray
 end
@@ -132,7 +157,7 @@ local function countSleepingPlayers()
     local sleeping = {}
     local sleepCount = 0
 
-    local beds = findAllBeds()
+    local beds = getValidBeds()
     if #beds == 0 then return sleeping, 0, total end
 
     for i = 1, total do
@@ -316,7 +341,6 @@ local function showHudWidget(sleepCount, total)
         text:SetText(FText(string.format("%d/%d players sleeping...", sleepCount, total)))
 
         local slot = canvas:AddChildToCanvas(text)
-        -- Right side of screen
         slot:SetAnchors({ Minimum = { X = 1.0, Y = 0.1 }, Maximum = { X = 1.0, Y = 0.1 } })
         slot:SetAlignment({ X = 1.0, Y = 0.5 })
         slot:SetAutoSize(true)
@@ -533,6 +557,7 @@ local pollTimerActive = false
 local function startPollLoop()
     if pollTimerActive then return end
     pollTimerActive = true
+    refreshBedCache()
     print(string.format("%s Poll loop started\n", MOD_TAG))
 
     local function pollOnce()
