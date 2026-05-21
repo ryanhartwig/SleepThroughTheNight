@@ -77,37 +77,12 @@ end
 
 -- ── Bed Detection ────────────────────────────────────────────
 
-local cachedBeds = {}
-local lastBedRefresh = 0
-local BED_REFRESH_INTERVAL_MS = 30000  -- re-scan for new/removed beds every 30s
-
-local function refreshBedCache()
+local function findAllBeds()
     local ok, beds = pcall(FindAllOf, "BP_BedSingle_C")
     if ok and beds then
-        cachedBeds = beds
-    else
-        cachedBeds = {}
+        return beds
     end
-    lastBedRefresh = os.clock() * 1000
-end
-
-local function getValidBeds()
-    -- Periodic refresh to catch newly built or deconstructed beds
-    local now = os.clock() * 1000
-    if now - lastBedRefresh > BED_REFRESH_INTERVAL_MS then
-        refreshBedCache()
-    end
-    -- Filter out deconstructed beds
-    local valid = {}
-    for _, bed in ipairs(cachedBeds) do
-        if bed:IsValid() then
-            table.insert(valid, bed)
-        end
-    end
-    if #valid ~= #cachedBeds then
-        cachedBeds = valid
-    end
-    return valid
+    return {}
 end
 
 local function isPlayerInBed(pawn, beds)
@@ -157,7 +132,7 @@ local function countSleepingPlayers()
     local sleeping = {}
     local sleepCount = 0
 
-    local beds = getValidBeds()
+    local beds = findAllBeds()
     if #beds == 0 then return sleeping, 0, total end
 
     for i = 1, total do
@@ -558,7 +533,6 @@ local pollTimerActive = false
 local function startPollLoop()
     if pollTimerActive then return end
     pollTimerActive = true
-    refreshBedCache()
     print(string.format("%s Poll loop started\n", MOD_TAG))
 
     local function pollOnce()
