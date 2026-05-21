@@ -78,7 +78,8 @@ end
 -- ── Bed Detection ────────────────────────────────────────────
 
 local cachedBeds = {}
-local bedsInitialized = false
+local lastBedRefresh = 0
+local BED_REFRESH_INTERVAL_MS = 30000  -- re-scan for new/removed beds every 30s
 
 local function refreshBedCache()
     local ok, beds = pcall(FindAllOf, "BP_BedSingle_C")
@@ -87,21 +88,15 @@ local function refreshBedCache()
     else
         cachedBeds = {}
     end
-    bedsInitialized = true
-    print(string.format("%s Bed cache: %d beds found\n", MOD_TAG, #cachedBeds))
+    lastBedRefresh = os.clock() * 1000
 end
 
--- Watch for new beds being built
-NotifyOnNewObject("/Script/Engine.Actor", function(newObject)
-    pcall(function()
-        if newObject:IsValid() and newObject:GetClass():GetFName():ToString() == "BP_BedSingle_C" then
-            table.insert(cachedBeds, newObject)
-            print(string.format("%s New bed detected, cache now %d beds\n", MOD_TAG, #cachedBeds))
-        end
-    end)
-end)
-
 local function getValidBeds()
+    -- Periodic refresh to catch newly built or deconstructed beds
+    local now = os.clock() * 1000
+    if now - lastBedRefresh > BED_REFRESH_INTERVAL_MS then
+        refreshBedCache()
+    end
     -- Filter out deconstructed beds
     local valid = {}
     for _, bed in ipairs(cachedBeds) do
