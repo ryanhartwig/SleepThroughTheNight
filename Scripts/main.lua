@@ -1,7 +1,7 @@
 local UEHelpers = require("UEHelpers")
 local config = require("config")
 
-local VERSION = "1.0.1"
+local VERSION = "1.0.2"
 local MOD_TAG = "[SleepThroughNight]"
 print(string.format("%s v%s loaded\n", MOD_TAG, VERSION))
 
@@ -410,7 +410,7 @@ local function doTimeSkip()
     -- Wait for the bed entry animation to finish, then revalidate before fading
     ExecuteWithDelay(2000, function()
         ExecuteInGameThread(function()
-            if myAttemptId ~= skipAttemptId then return end  -- stale timer
+            if myAttemptId ~= skipAttemptId then return end
             if currentState ~= STATE_SKIPPING then return end
 
             -- Recheck: are enough players still in bed?
@@ -420,34 +420,39 @@ local function doTimeSkip()
                 transitionTo(STATE_IDLE)
                 return
             end
-            -- Singleplayer: check player is still in bed
             if isSingleplayer() and sleepCount == 0 then
                 print(string.format("%s Sleep cancelled — player left bed\n", MOD_TAG))
                 transitionTo(STATE_IDLE)
                 return
             end
 
+            -- Fade to black (500ms)
             fadeIn(function()
                 if currentState ~= STATE_SKIPPING then return end
 
-                skipToMorning()
-
-                -- Brief hold on black screen, then fade out
-                ExecuteWithDelay(300, function()
+                -- Hold black so all clients are fully faded before time changes
+                ExecuteWithDelay(500, function()
                     ExecuteInGameThread(function()
-                        fadeOut(function()
-                            notifyAll(string.format("Good morning! Day %d", dayNum + 1))
-                            -- Mark anyone still in bed as immune — they must
-                            -- leave and re-enter to trigger another sleep
-                            local stillSleeping, _, _ = countSleepingPlayers()
-                            prevSleeping = stillSleeping
-                            blockedNotifiedPlayers = {}
-                            postSkipImmunity = {}
-                            for name, _ in pairs(stillSleeping) do
-                                blockedNotifiedPlayers[name] = true
-                                postSkipImmunity[name] = true
-                            end
-                            transitionTo(STATE_IDLE)
+                        if currentState ~= STATE_SKIPPING then return end
+                        skipToMorning()
+
+                        -- Hold after skip to let new lighting settle
+                        ExecuteWithDelay(500, function()
+                            ExecuteInGameThread(function()
+                                -- Fade back in (500ms)
+                                fadeOut(function()
+                                    notifyAll(string.format("Good morning! Day %d", dayNum + 1))
+                                    local stillSleeping, _, _ = countSleepingPlayers()
+                                    prevSleeping = stillSleeping
+                                    blockedNotifiedPlayers = {}
+                                    postSkipImmunity = {}
+                                    for name, _ in pairs(stillSleeping) do
+                                        blockedNotifiedPlayers[name] = true
+                                        postSkipImmunity[name] = true
+                                    end
+                                    transitionTo(STATE_IDLE)
+                                end)
+                            end)
                         end)
                     end)
                 end)
